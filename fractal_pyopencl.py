@@ -10,6 +10,11 @@ import os
 
 os.environ['PYOPENCL_CTX'] = '0'
 
+
+###############################################################################
+## Helper classes
+
+
 class FrclPar:
     def __init__(self):
         self.maxiter = 255
@@ -30,7 +35,45 @@ class FrclPar:
     def decr_ci(self):
         self.ci -= self.delta_c
     
+
+class TileExporter:
+    def __init__(self, size, out_dir):
+        self.size    = size
+        self.out_dir = out_dir
+        self.counter = 0
         
+    def export_tiles(self, pix):
+        w = pix.width()
+        h = pix.height()
+        
+        for xi in range(0, w-self.size, self.size):
+            for yi in range(0, h-self.size, self.size):
+                tile = pix.copy(xi, yi, self.size, self.size)
+                tile_name = os.path.join(self.out_dir, "tile_" + str(self.counter)  + ".png")
+                tile.save(tile_name)
+                self.counter += 1
+                
+                
+class RandColoring:
+    def __init__(self, stride, shift, idx):
+        self.stride = stride
+        self.shift = shift
+        self.idx = idx
+        
+        
+class ExportFile:
+    def __init__(self):
+        self.dir = None 
+        self.bn  = "fractal_export"
+        self.id  = 0
+    
+    def get_next_filename(self):
+        if self.dir is None:
+            return None
+        
+        fn = os.path.join(self.dir, self.bn + "_"  + str(self.id) + '.png')
+        self.id += 1
+        return fn
 
 ###############################################################################
  
@@ -160,22 +203,7 @@ class ViewRect():
         
     def max_y(self):
         return self.rect.bottom()
-    
-        
-class ExportFile:
-    def __init__(self):
-        self.dir = None 
-        self.bn  = "fractal_export"
-        self.id  = 0
-    
-    def get_next_filename(self):
-        if self.dir is None:
-            return None
-        
-        fn = os.path.join(self.dir, self.bn + "_"  + str(self.id) + '.png')
-        self.id += 1
-        return fn
-       
+           
         
 ###############################################################################
 class FractalWidget(QWidget):
@@ -197,9 +225,12 @@ class FractalWidget(QWidget):
         self.pos_down = {'x':0, 'y':0}
         
         self.export_file = ExportFile()
+        self.rand_coloring = None
 
         self.coloring = 1        
         self.setup_colorTable() 
+        
+        self.tile_exporter = TileExporter(256, "/media/armin/Volume/source/fractal_pyopencl/tiles")
         
         
         self.frcl_pars = FrclPar()
@@ -278,6 +309,10 @@ class FractalWidget(QWidget):
 
         if e.key() == QtCore.Qt.Key_S:            
             self.save_view(mode="series")
+            
+        if e.modifiers() & Qt.ControlModifier and e.key() == QtCore.Qt.Key_E:
+            self.tile_exporter.export_tiles(self.imageLabel.pixmap())
+            self.update_status_bar("exporting tiles (tot=" + str(self.tile_exporter.counter) + ")")
            
             
     def save_view(self, mode="dialog"):
@@ -384,6 +419,9 @@ class FractalWidget(QWidget):
         elif event.key() == QtCore.Qt.Key_5:
             self.coloring = 5
             do_update = True            
+        elif event.key() == QtCore.Qt.Key_6:
+            self.coloring = 6
+            do_update = True            
             
         if do_update:            
             self.setup_colorTable()
@@ -449,22 +487,24 @@ class FractalWidget(QWidget):
         elif self.coloring == 5:
             ## sample a coloring
             stride = np.random.randint(1,7)
-            idx = np.random.choice(3, 2, replace=False)
-            rgb_1 = np.zeros((128, 3))
-            rgb_2 = np.zeros((128, 3))
+            idx = np.random.choice(3, 2, replace=False)        
             shift = np.random.randint(127)
-            for k in range(rgb_1.shape[0]):
-                rgb_1[k,idx[0]] = k+shift
-                rgb_1[k,idx[1]] = k+shift
-                rgb_2[k,idx[1]] = k+shift
-                
-            for k in range(rgb_1.shape[0]):
-                if k % stride == 0:
-                    self.colorTable.append(QtGui.qRgb(rgb_1[k,0],rgb_1[k,1],rgb_1[k,2]))
-                    self.colorTable.append(QtGui.qRgb(rgb_1[k,0],rgb_1[k,1],rgb_1[k,2]))
-                else: 
-                    self.colorTable.append(QtGui.qRgb(rgb_2[k,0],rgb_2[k,1],rgb_2[k,2]))
-                    self.colorTable.append(QtGui.qRgb(rgb_2[k,0],rgb_2[k,1],rgb_2[k,2]))
+            self.set_random_coloring(stride, shift, idx)
+            self.rand_coloring = RandColoring(stride, shift, idx)
+            
+            
+        elif self.coloring == 6:
+            if self.rand_coloring is None:
+                return
+            
+            self.set_random_coloring(self.rand_coloring.stride, 
+                                     self.rand_coloring.shift,
+                                     self.rand_coloring.idx)
+            
+            self.rand_coloring.stride += 1
+            self.rand_coloring.stride %= 100        
+            if self.rand_coloring.stride==0:
+                self.rand_coloring.stride += 1 
                     
         else:
             for b in range(128):
@@ -474,6 +514,24 @@ class FractalWidget(QWidget):
                 else: 
                     self.colorTable.append(QtGui.qRgb(0,0,b+127))
                     self.colorTable.append(QtGui.qRgb(0,0,b+127))
+                    
+    
+    def set_random_coloring(self, stride, shift, idx):
+        rgb_1 = np.zeros((128, 3))
+        rgb_2 = np.zeros((128, 3))
+          
+        for k in range(rgb_1.shape[0]):
+                rgb_1[k,idx[0]] = k+shift
+                rgb_1[k,idx[1]] = k+shift
+                rgb_2[k,idx[1]] = k+shift
+                
+        for k in range(rgb_1.shape[0]):
+            if k % stride == 0:
+                self.colorTable.append(QtGui.qRgb(rgb_1[k,0],rgb_1[k,1],rgb_1[k,2]))
+                self.colorTable.append(QtGui.qRgb(rgb_1[k,0],rgb_1[k,1],rgb_1[k,2]))
+            else: 
+                self.colorTable.append(QtGui.qRgb(rgb_2[k,0],rgb_2[k,1],rgb_2[k,2]))
+                self.colorTable.append(QtGui.qRgb(rgb_2[k,0],rgb_2[k,1],rgb_2[k,2]))   
                     
                     
     def update_status_bar(self, msg_add=""):
